@@ -16,12 +16,14 @@ MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 client = genai.Client(api_key=API_KEY)
 
 
+
 def generate_script():
     prompt = """
 Write one original Hindi YouTube Short script (Devanagari Hindi), 35-45 seconds.
 Topic: an interesting, verifiable science/history/technology fact suitable for a
 general Indian audience. Avoid medical, financial, political, sensational or
 dangerous claims. Do not invent statistics, dates, quotes or sources.
+
 Use this exact JSON schema and output JSON only:
 {
  "title":"Hindi title, under 65 characters",
@@ -37,7 +39,7 @@ Choose a topic that can be explained accurately without needing current news.
 Make the opening 2 seconds a strong curiosity hook and end with a question.
 """
 
-    retry_delays = [15, 30, 60, 90, 120]
+    retry_delays = [20, 40, 60, 90, 120]
 
     for attempt in range(len(retry_delays) + 1):
         try:
@@ -50,10 +52,22 @@ Make the opening 2 seconds a strong curiosity hook and end with a question.
                     response_mime_type="application/json"
                 )
             )
-            break
 
-        
+            data = json.loads(response.text)
+
+            required = ["title", "description", "narration", "visuals"]
+
+            if any(k not in data for k in required):
+                raise ValueError("Missing required script fields")
+
+            if not isinstance(data["visuals"], list) or len(data["visuals"]) < 3:
+                raise ValueError("At least 3 visuals are required")
+
+            print("SCRIPT_GENERATION_SUCCESS")
+            return data
+
         except Exception as e:
+
             status_code = (
                 getattr(e, "code", None)
                 or getattr(e, "status_code", None)
@@ -66,40 +80,49 @@ Make the opening 2 seconds a strong curiosity hook and end with a question.
                 )
                 status_code = int(match.group(1)) if match else None
 
-            print(f"Gemini API error status: {status_code}")
-            print(f"Error details: {e}")
+            error_name = type(e).__name__
 
-            if status_code not in (429, 500, 502, 503, 504):
+            network_errors = {
+                "RemoteProtocolError",
+                "ConnectError",
+                "ReadError",
+                "WriteError",
+                "TimeoutException",
+                "ConnectTimeout",
+                "ReadTimeout",
+            }
+
+            is_temporary = (
+                status_code in (429, 500, 502, 503, 504)
+                or error_name in network_errors
+                or "server disconnected without sending a response"
+                in str(e).lower()
+            )
+
+            print("Gemini error:", error_name)
+            print("Status:", status_code)
+            print("Details:", str(e))
+
+            if not is_temporary:
                 raise
 
             if attempt == len(retry_delays):
-                raise
+                raise RuntimeError(
+                    "Gemini unavailable after 6 attempts. "
+                    "Workflow stopped safely."
+                ) from e
 
-            wait = retry_delays[attempt]
-            print("Gemini temporarily unavailable.")
-            print(f"Retrying in {wait} seconds...")
+            wait = retry_delays[attempt] + random.randint(0, 5)
+
+            print(
+                f"Temporary Gemini issue. "
+                f"Retrying in {wait} seconds..."
+            )
+
             time.sleep(wait)
 
+    raise RuntimeError("Script generation failed")
 
-            if status_code not in (429, 500, 502, 503, 504):
-                raise
-
-            if attempt == len(retry_delays):
-                raise
-
-            wait = retry_delays[attempt]
-            print(f"Gemini temporarily unavailable: {e}")
-            print(f"Retrying in {wait} seconds...")
-            time.sleep(wait)
-
-    data = json.loads(response.text)
-
-    required = ["title", "description", "narration", "visuals"]
-
-    if any(k not in data for k in required) or len(data["visuals"]) < 3:
-        raise ValueError("Model response did not match the required schema")
-
-    return data
 
 def make_voice(text):
     # espeak-ng is a free, offline Hindi TTS fallback. Quality varies by runner voice.
