@@ -1,9 +1,10 @@
+
 name: Daily Hindi YouTube Short
 
 on:
   workflow_dispatch:
   # schedule:
-  #   # 09:00 UTC = 14:30 IST. GitHub schedule may start late.
+  #   # 09:00 UTC = 14:30 IST
   #   - cron: "0 9 * * *"
 
 permissions:
@@ -15,10 +16,9 @@ concurrency:
 
 jobs:
   create-and-upload:
-    # Ubuntu hosted runner. Public repos get standard runner minutes free;
-    # private repos are subject to the account's included minutes.
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -39,8 +39,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Generate, render and upload
-       env:
-  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-  YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
-  YOUTUBE_EXPECTED_CHANNEL_NAME: ${{ secrets.YOUTUBE_EXPECTED_CHANNEL_NAME }}
-  YOUTUBE_PRIVACY_STATUS: ${{ vars.YOUTUBE_PRIVACY_STATUS || 'private' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          YOUTUBE_EXPECTED_CHANNEL_NAME: ${{ secrets.YOUTUBE_EXPECTED_CHANNEL_NAME }}
+          YOUTUBE_PRIVACY_STATUS: ${{ vars.YOUTUBE_PRIVACY_STATUS || 'private' }}
+        run: python main.py
