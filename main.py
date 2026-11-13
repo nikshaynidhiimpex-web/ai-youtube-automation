@@ -52,8 +52,34 @@ Make the opening 2 seconds a strong curiosity hook and end with a question.
             )
             break
 
+        
         except Exception as e:
-            status_code = getattr(e, "status_code", None)
+            status_code = (
+                getattr(e, "code", None)
+                or getattr(e, "status_code", None)
+            )
+
+            if status_code is None:
+                match = re.search(
+                    r"\b(429|500|502|503|504)\b",
+                    str(e)
+                )
+                status_code = int(match.group(1)) if match else None
+
+            print(f"Gemini API error status: {status_code}")
+            print(f"Error details: {e}")
+
+            if status_code not in (429, 500, 502, 503, 504):
+                raise
+
+            if attempt == len(retry_delays):
+                raise
+
+            wait = retry_delays[attempt]
+            print("Gemini temporarily unavailable.")
+            print(f"Retrying in {wait} seconds...")
+            time.sleep(wait)
+
 
             if status_code not in (429, 500, 502, 503, 504):
                 raise
