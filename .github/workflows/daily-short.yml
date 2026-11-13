@@ -2,9 +2,9 @@ name: Daily Hindi YouTube Short
 
 on:
   workflow_dispatch:
-  schedule:
-    # 09:00 UTC = 14:30 IST. GitHub schedule may start late.
-    - cron: "0 9 * * *"
+  # schedule:
+  #   # 09:00 UTC = 14:30 IST. GitHub schedule may start late.
+  #   - cron: "0 9 * * *"
 
 permissions:
   contents: read
