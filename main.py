@@ -1,4 +1,4 @@
-import os, json, re, subprocess, textwrap, random
+import os, json, re, subprocess, textwrap, random, time
 from datetime import datetime, timezone
 from pathlib import Path
 from google import genai
@@ -35,11 +35,36 @@ Use this exact JSON schema and output JSON only:
 Choose a topic that can be explained accurately without needing current news.
 Make the opening 2 seconds a strong curiosity hook and end with a question.
 """
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json")
-    )
+   
+retry_delays = [15, 30, 60, 90, 120]
+
+for attempt in range(len(retry_delays) + 1):
+    try:
+        print(f"Gemini API attempt {attempt + 1}/6")
+
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        break
+
+    except Exception as e:
+        status_code = getattr(e, "status_code", None)
+
+        if status_code not in (429, 500, 502, 503, 504):
+            raise
+
+        if attempt == len(retry_delays):
+            raise
+
+        wait = retry_delays[attempt]
+        print(f"Gemini temporarily unavailable: {e}")
+        print(f"Retrying in {wait} seconds...")
+        time.sleep(wait)
+
     data = json.loads(response.text)
     required = ["title", "description", "narration", "visuals"]
     if any(k not in data for k in required) or len(data["visuals"]) < 3:
