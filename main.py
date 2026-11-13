@@ -17,9 +17,113 @@ client = genai.Client(api_key=API_KEY)
 
 
 
+# ============================================================
+# DYNAMIC GEMINI MODEL CONFIGURATION
+# ============================================================
+
+MODEL_CANDIDATES = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+]
+
+MODEL_TIMEOUT_SECONDS = 35
+TOTAL_GENERATION_BUDGET = 480
+MAX_MODEL_CYCLES = 2
+CYCLE_PAUSE_SECONDS = 10
+
+# SDK automatic retries disabled.
+# Our own model rotation handles retries and switching.
+client = genai.Client(
+    api_key=API_KEY,
+    http_options=types.HttpOptions(
+        timeout=MODEL_TIMEOUT_SECONDS * 1000,
+        retry_options=types.HttpRetryOptions(
+            attempts=1
+        ),
+    ),
+)
+
+
+def get_gemini_error_status(error):
+    status = (
+        getattr(error, "code", None)
+        or getattr(error, "status_code", None)
+    )
+
+    if status is not None:
+        try:
+            return int(status)
+        except (ValueError, TypeError):
+            pass
+
+    match = re.search(
+        r"\b(400|401|403|404|408|429|500|502|503|504)\b",
+        str(error)
+    )
+
+    return int(match.group(1)) if match else None
+
+
+def is_gemini_network_error(error):
+    network_errors = {
+        "RemoteProtocolError",
+        "ConnectError",
+        "ReadError",
+        "WriteError",
+        "TimeoutException",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "PoolTimeout",
+    }
+
+    return (
+        type(error).__name__ in network_errors
+        or "server disconnected without sending a response"
+        in str(error).lower()
+        or "connection reset" in str(error).lower()
+    )
+
+
+def validate_generated_script(data):
+
+    if not isinstance(data, dict):
+        raise ValueError("Invalid JSON object")
+
+    required = [
+        "title",
+        "description",
+        "narration",
+        "visuals"
+    ]
+
+    if any(key not in data for key in required):
+        raise ValueError("Missing required script fields")
+
+    if not isinstance(data["visuals"], list):
+        raise ValueError("Visuals must be a list")
+
+    if len(data["visuals"]) < 3:
+        raise ValueError("At least 3 visuals are required")
+
+    for visual in data["visuals"][:3]:
+        if not isinstance(visual, dict):
+            raise ValueError("Invalid visual entry")
+
+        if not visual.get("query") or not visual.get("caption"):
+            raise ValueError("Visual query/caption missing")
+
+    return data
+
+
 def generate_script():
+
     prompt = """
 Write one original Hindi YouTube Short script (Devanagari Hindi), 35-45 seconds.
+
 Topic: an interesting, verifiable science/history/technology fact suitable for a
 general Indian audience. Avoid medical, financial, political, sensational or
 dangerous claims. Do not invent statistics, dates, quotes or sources.
@@ -35,94 +139,144 @@ Use this exact JSON schema and output JSON only:
    {"query":"English visual search phrase","caption":"short Hindi on-screen caption"}
  ]
 }
+
 Choose a topic that can be explained accurately without needing current news.
 Make the opening 2 seconds a strong curiosity hook and end with a question.
 """
 
-    retry_delays = [20, 40, 60, 90, 120]
+    start_time = time.monotonic()
+    deadline = start_time + TOTAL_GENERATION_BUDGET
 
-    for attempt in range(len(retry_delays) + 1):
-        try:
-            print(f"Gemini API attempt {attempt + 1}/6")
+    last_error = None
 
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
+    print("=" * 55)
+    print("DYNAMIC GEMINI MODEL ROTATION STARTED")
+    print("Available models:", len(MODEL_CANDIDATES))
+    print("Maximum cycles:", MAX_MODEL_CYCLES)
+    print("Per model timeout:", MODEL_TIMEOUT_SECONDS, "seconds")
+    print("Total time budget:", TOTAL_GENERATION_BUDGET, "seconds")
+    print("=" * 55)
+
+    for cycle in range(1, MAX_MODEL_CYCLES + 1):
+
+        print(f"\nSTARTING MODEL CYCLE {cycle}/{MAX_MODEL_CYCLES}")
+
+        for index, model_name in enumerate(
+            MODEL_CANDIDATES, start=1
+        ):
+
+            remaining = deadline - time.monotonic()
+
+            # Never start a request that cannot fit inside the budget.
+            if remaining < MODEL_TIMEOUT_SECONDS:
+                print("TIME BUDGET LOW. STOPPING MODEL ROTATION.")
+                break
+
+            print("\n-----------------------------------")
+            print(f"MODEL {index}/{len(MODEL_CANDIDATES)}")
+            print("CURRENT MODEL:", model_name)
+            print("-----------------------------------")
+
+            try:
+
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.7,
+                    )
                 )
-            )
 
-            data = json.loads(response.text)
+                if not response.text:
+                    raise ValueError("Empty Gemini response")
 
-            required = ["title", "description", "narration", "visuals"]
+                data = json.loads(response.text)
+                data = validate_generated_script(data)
 
-            if any(k not in data for k in required):
-                raise ValueError("Missing required script fields")
+                elapsed = time.monotonic() - start_time
 
-            if not isinstance(data["visuals"], list) or len(data["visuals"]) < 3:
-                raise ValueError("At least 3 visuals are required")
+                print("\n===================================")
+                print("SCRIPT_GENERATION_SUCCESS")
+                print("SUCCESSFUL MODEL:", model_name)
+                print(f"TOTAL TIME: {elapsed:.1f} seconds")
+                print("===================================")
 
-            print("SCRIPT_GENERATION_SUCCESS")
-            return data
+                return data
 
-        except Exception as e:
+            except Exception as error:
 
-            status_code = (
-                getattr(e, "code", None)
-                or getattr(e, "status_code", None)
-            )
+                last_error = error
 
-            if status_code is None:
-                match = re.search(
-                    r"\b(429|500|502|503|504)\b",
-                    str(e)
+                status = get_gemini_error_status(error)
+                network_error = is_gemini_network_error(error)
+
+                print("MODEL FAILED:", model_name)
+                print("ERROR:", type(error).__name__)
+                print("STATUS:", status)
+                print("DETAILS:", str(error)[:1000])
+
+                # Invalid API credentials affect every model.
+                if status in (401, 403):
+                    raise RuntimeError(
+                        "Gemini authentication failed. "
+                        "Check GEMINI_API_KEY."
+                    ) from error
+
+                # A malformed request will generally fail on every model.
+                if status == 400:
+                    raise RuntimeError(
+                        "Gemini rejected the request. "
+                        "Check prompt/configuration."
+                    ) from error
+
+                # Temporary errors or model-specific availability errors:
+                # immediately skip this model.
+                switch_to_next = (
+                    status in (
+                        404, 408, 429,
+                        500, 502, 503, 504
+                    )
+                    or network_error
+                    or isinstance(error, ValueError)
+                    or isinstance(error, json.JSONDecodeError)
                 )
-                status_code = int(match.group(1)) if match else None
 
-            error_name = type(e).__name__
+                if switch_to_next:
 
-            network_errors = {
-                "RemoteProtocolError",
-                "ConnectError",
-                "ReadError",
-                "WriteError",
-                "TimeoutException",
-                "ConnectTimeout",
-                "ReadTimeout",
-            }
+                    print(
+                        f"SKIPPING {model_name}. "
+                        "SWITCHING TO NEXT MODEL..."
+                    )
 
-            is_temporary = (
-                status_code in (429, 500, 502, 503, 504)
-                or error_name in network_errors
-                or "server disconnected without sending a response"
-                in str(e).lower()
-            )
+                    continue
 
-            print("Gemini error:", error_name)
-            print("Status:", status_code)
-            print("Details:", str(e))
-
-            if not is_temporary:
                 raise
 
-            if attempt == len(retry_delays):
-                raise RuntimeError(
-                    "Gemini unavailable after 6 attempts. "
-                    "Workflow stopped safely."
-                ) from e
+        # All models have been attempted once.
+        if cycle < MAX_MODEL_CYCLES:
 
-            wait = retry_delays[attempt] + random.randint(0, 5)
+            remaining = deadline - time.monotonic()
 
+            if remaining <= CYCLE_PAUSE_SECONDS + MODEL_TIMEOUT_SECONDS:
+                break
+
+            print("\nALL MODELS FAILED IN THIS CYCLE.")
             print(
-                f"Temporary Gemini issue. "
-                f"Retrying in {wait} seconds..."
+                f"Waiting {CYCLE_PAUSE_SECONDS} seconds "
+                "before restarting model rotation."
             )
 
-            time.sleep(wait)
+            time.sleep(CYCLE_PAUSE_SECONDS)
 
-    raise RuntimeError("Script generation failed")
+    elapsed = time.monotonic() - start_time
 
+    raise RuntimeError(
+        "ALL GEMINI MODELS FAILED. "
+        f"Cycles: {MAX_MODEL_CYCLES}. "
+        f"Elapsed: {elapsed:.1f} seconds. "
+        f"Last error: {last_error}"
+    ) from last_error
 
 def make_voice(text):
     # espeak-ng is a free, offline Hindi TTS fallback. Quality varies by runner voice.
