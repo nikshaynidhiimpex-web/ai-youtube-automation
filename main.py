@@ -100,15 +100,50 @@ def render_video(script, wav):
     ], check=True)
     return video
 
+
 def youtube_service():
     raw = os.environ["YOUTUBE_TOKEN_JSON"]
     info = json.loads(raw)
+
+    youtube_scopes = [
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly",
+    ]
+
     creds = Credentials.from_authorized_user_info(
-        info, scopes=["https://www.googleapis.com/auth/youtube.upload"]
+        info, scopes=youtube_scopes
     )
+
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-    return build("youtube", "v3", credentials=creds)
+
+    youtube = build("youtube", "v3", credentials=creds)
+
+    # Verify channel identity before uploading
+    channels = youtube.channels().list(
+        part="snippet", mine=True
+    ).execute().get("items", [])
+
+    if not channels:
+        raise RuntimeError("No YouTube channel found.")
+
+    actual_channel = channels[0]["snippet"]["title"]
+    expected_channel = os.getenv(
+        "YOUTUBE_EXPECTED_CHANNEL_NAME", "Sayar Hu Sayad"
+    ).strip()
+
+    print("AUTHORIZED_YOUTUBE_CHANNEL:", actual_channel)
+
+    if actual_channel != expected_channel:
+        raise RuntimeError(
+            f"Channel mismatch: expected '{expected_channel}', "
+            f"but OAuth authorized '{actual_channel}'. Upload stopped."
+        )
+
+    print("CHANNEL_VERIFICATION: PASSED")
+
+    return youtube
+
 
 def upload(video, script, thumb):
     youtube = youtube_service()
